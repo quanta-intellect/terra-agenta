@@ -201,6 +201,40 @@ button {
   white-space: nowrap;
 }
 
+.segmented-control {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid #26343a;
+  border-radius: 8px;
+  background: #0f1519;
+}
+
+.segment-button {
+  min-width: 0;
+  min-height: 34px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #9fb0ad;
+  cursor: pointer;
+  font-size: 0.82rem;
+  transition:
+    background 140ms ease,
+    color 140ms ease;
+}
+
+.segment-button:hover {
+  background: #172127;
+  color: #d8e3e0;
+}
+
+.segment-button.active {
+  background: #243238;
+  color: #edf4f2;
+}
+
 .primary-action,
 .secondary-action {
   display: inline-flex;

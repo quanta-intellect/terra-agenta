@@ -1,8 +1,9 @@
-import { Camera, CameraIcon, Crosshair, Globe2, Image, LocateFixed, RotateCcw } from "lucide-react";
+import { Camera, CameraIcon, Crosshair, Gauge, Globe2, Image, LocateFixed, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Cartesian3,
   Cartographic,
+  Cesium3DTileset,
   Color,
   EllipsoidTerrainProvider,
   HeadingPitchRoll,
@@ -39,6 +40,36 @@ const presets = [
 ] satisfies Array<{ name: string; description: string; camera: CameraState }>;
 
 const initialCamera: CameraState = presets[0].camera;
+type QualityMode = "fast" | "balanced" | "sharp";
+
+const qualitySettings: Record<
+  QualityMode,
+  {
+    label: string;
+    maximumScreenSpaceError: number;
+    dynamicScreenSpaceErrorFactor: number;
+    resolutionScale: number;
+  }
+> = {
+  fast: {
+    label: "Fast",
+    maximumScreenSpaceError: 32,
+    dynamicScreenSpaceErrorFactor: 36,
+    resolutionScale: 0.82
+  },
+  balanced: {
+    label: "Balanced",
+    maximumScreenSpaceError: 22,
+    dynamicScreenSpaceErrorFactor: 28,
+    resolutionScale: 0.92
+  },
+  sharp: {
+    label: "Sharp",
+    maximumScreenSpaceError: 14,
+    dynamicScreenSpaceErrorFactor: 20,
+    resolutionScale: 1
+  }
+};
 
 function cameraFromViewer(viewer: Viewer): CameraState {
   const cartographic = Cartographic.fromCartesian(viewer.camera.positionWC);
@@ -62,11 +93,33 @@ function setCamera(viewer: Viewer, camera: CameraState, fly = true) {
   );
 
   if (fly) {
-    viewer.camera.flyTo({ destination, orientation, duration: 1.35 });
+    viewer.camera.flyTo({ destination, orientation, duration: 0.75 });
     return;
   }
 
   viewer.camera.setView({ destination, orientation });
+}
+
+function tuneCameraControls(viewer: Viewer) {
+  const controller = viewer.scene.screenSpaceCameraController;
+  controller.enableCollisionDetection = false;
+  controller.inertiaSpin = 0.18;
+  controller.inertiaTranslate = 0.12;
+  controller.inertiaZoom = 0.08;
+  controller.zoomFactor = 4;
+  controller.minimumZoomDistance = 35;
+}
+
+function applyQualityMode(viewer: Viewer, tileset: Cesium3DTileset | null, mode: QualityMode) {
+  const settings = qualitySettings[mode];
+  viewer.resolutionScale = settings.resolutionScale;
+
+  if (tileset) {
+    tileset.maximumScreenSpaceError = settings.maximumScreenSpaceError;
+    tileset.dynamicScreenSpaceError = true;
+    tileset.dynamicScreenSpaceErrorDensity = 0.00028;
+    tileset.dynamicScreenSpaceErrorFactor = settings.dynamicScreenSpaceErrorFactor;
+  }
 }
 
 function formatLoadError(error: unknown) {
@@ -88,8 +141,10 @@ function formatLoadError(error: unknown) {
 export default function App() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<Viewer | null>(null);
+  const googleTilesetRef = useRef<Cesium3DTileset | null>(null);
   const [camera, setCameraState] = useState<CameraState>(initialCamera);
   const [captures, setCaptures] = useState<CaptureRecord[]>([]);
+  const [qualityMode, setQualityMode] = useState<QualityMode>("fast");
   const [isGoogleTilesActive, setIsGoogleTilesActive] = useState(false);
   const [status, setStatus] = useState("Booting globe");
   const [error, setError] = useState<string | null>(null);
@@ -121,6 +176,7 @@ export default function App() {
       timeline: false,
       navigationHelpButton: false,
       terrainProvider: new EllipsoidTerrainProvider(),
+      useBrowserRecommendedResolution: true,
       contextOptions: {
         webgl: {
           preserveDrawingBuffer: true
@@ -141,7 +197,8 @@ export default function App() {
     if (viewer.scene.skyAtmosphere) {
       viewer.scene.skyAtmosphere.show = true;
     }
-    viewer.scene.screenSpaceCameraController.enableCollisionDetection = false;
+    tuneCameraControls(viewer);
+    applyQualityMode(viewer, null, qualityMode);
     viewer.scene.debugShowFramesPerSecond = false;
     setCamera(viewer, initialCamera, false);
     setCameraState(cameraFromViewer(viewer));
@@ -171,14 +228,20 @@ export default function App() {
           onlyUsingWithGoogleGeocoder: true
         },
         {
-          maximumScreenSpaceError: 16,
+          maximumScreenSpaceError: qualitySettings[qualityMode].maximumScreenSpaceError,
           dynamicScreenSpaceError: true,
+          dynamicScreenSpaceErrorDensity: 0.00028,
+          dynamicScreenSpaceErrorFactor: qualitySettings[qualityMode].dynamicScreenSpaceErrorFactor,
+          foveatedScreenSpaceError: true,
+          foveatedMinimumScreenSpaceErrorRelaxation: 0.4,
           enableCollision: false
         }
       )
         .then((tileset) => {
           tileset.showCreditsOnScreen = true;
+          googleTilesetRef.current = tileset;
           viewer.scene.primitives.add(tileset);
+          applyQualityMode(viewer, tileset, qualityMode);
           setCamera(viewer, initialCamera, false);
           setIsGoogleTilesActive(true);
           setStatus("Google 3D Tiles active over base globe");
@@ -193,6 +256,7 @@ export default function App() {
 
     return () => {
       removeCameraListener();
+      googleTilesetRef.current = null;
       viewer.destroy();
       viewerRef.current = null;
     };
@@ -205,7 +269,17 @@ export default function App() {
     }
     setStatus("Flying");
     setCamera(viewer, nextCamera);
-    window.setTimeout(() => setStatus("Ready"), 1450);
+    window.setTimeout(() => setStatus("Ready"), 850);
+  }, []);
+
+  const handleQualityMode = useCallback((mode: QualityMode) => {
+    const viewer = viewerRef.current;
+    setQualityMode(mode);
+
+    if (viewer) {
+      applyQualityMode(viewer, googleTilesetRef.current, mode);
+      setStatus(`${qualitySettings[mode].label} navigation mode`);
+    }
   }, []);
 
   const captureScreenshot = useCallback(() => {
@@ -243,7 +317,7 @@ export default function App() {
       return;
     }
 
-    viewer.scene.screenSpaceCameraController.enableCollisionDetection = false;
+    tuneCameraControls(viewer);
     viewer.scene.globe.show = true;
     setCamera(viewer, initialCamera, false);
     setCameraState(cameraFromViewer(viewer));
@@ -277,6 +351,24 @@ export default function App() {
               <button key={preset.name} className="preset-button" onClick={() => handlePreset(preset.camera)}>
                 <span>{preset.name}</span>
                 <small>{preset.description}</small>
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section className="panel-section">
+          <div className="section-heading">
+            <Gauge size={16} aria-hidden="true" />
+            <h2>Navigation</h2>
+          </div>
+          <div className="segmented-control" aria-label="Navigation quality">
+            {(Object.keys(qualitySettings) as QualityMode[]).map((mode) => (
+              <button
+                key={mode}
+                className={mode === qualityMode ? "segment-button active" : "segment-button"}
+                onClick={() => handleQualityMode(mode)}
+              >
+                {qualitySettings[mode].label}
               </button>
             ))}
           </div>
