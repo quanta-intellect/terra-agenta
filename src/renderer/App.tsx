@@ -1,12 +1,15 @@
 import { Camera, CameraIcon, Crosshair, Gauge, Globe2, Image, LocateFixed, RotateCcw, Square } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  BoundingSphere,
   Cartesian3,
   Cartographic,
   Cesium3DTileset,
   Color,
   EllipsoidTerrainProvider,
+  HeadingPitchRange,
   HeadingPitchRoll,
+  Matrix4,
   Math as CesiumMath,
   UrlTemplateImageryProvider,
   Viewer,
@@ -115,19 +118,20 @@ function setCamera(viewer: Viewer, camera: CameraState, fly = true) {
   resumeRenderLoop(viewer);
   viewer.scene.screenSpaceCameraController.enableInputs = true;
   viewer.camera.cancelFlight();
-  const destination = Cartesian3.fromDegrees(camera.lon, camera.lat, camera.altitude);
-  const orientation = new HeadingPitchRoll(
+  const target = Cartesian3.fromDegrees(camera.lon, camera.lat, 0);
+  const range = Math.max(camera.altitude, 500);
+  const offset = new HeadingPitchRange(
     CesiumMath.toRadians(camera.heading),
     CesiumMath.toRadians(camera.pitch),
-    CesiumMath.toRadians(camera.roll)
+    range
   );
 
   if (fly) {
-    viewer.camera.flyTo({
-      destination,
-      orientation,
+    viewer.camera.flyToBoundingSphere(new BoundingSphere(target, 1), {
+      offset,
       duration: 0.75,
       complete: () => {
+        viewer.camera.lookAtTransform(Matrix4.IDENTITY);
         stopCamera(viewer);
         forceRender(viewer);
       },
@@ -137,7 +141,8 @@ function setCamera(viewer: Viewer, camera: CameraState, fly = true) {
     return;
   }
 
-  viewer.camera.setView({ destination, orientation });
+  viewer.camera.lookAt(target, offset);
+  viewer.camera.lookAtTransform(Matrix4.IDENTITY);
   forceRender(viewer);
 }
 
@@ -162,6 +167,17 @@ function setGoogleTilesFrozen(tileset: Cesium3DTileset | null, frozen: boolean) 
   if (tileset) {
     tileset.debugFreezeFrame = frozen;
   }
+}
+
+function applyLayerMode(viewer: Viewer, tileset: Cesium3DTileset | null, mode: LayerMode) {
+  const useGoogle3D = mode === "hybrid" && Boolean(tileset);
+  viewer.scene.globe.show = !useGoogle3D;
+
+  if (tileset) {
+    tileset.show = useGoogle3D;
+  }
+
+  forceRender(viewer);
 }
 
 function lockCameraAtCurrentView(viewer: Viewer) {
@@ -398,10 +414,9 @@ export default function App() {
         .then((tileset) => {
           tileset.showCreditsOnScreen = true;
           googleTilesetRef.current = tileset;
-          tileset.show = layerMode === "hybrid";
           viewer.scene.primitives.add(tileset);
           applyQualityMode(viewer, tileset, qualityMode);
-          forceRender(viewer);
+          applyLayerMode(viewer, tileset, layerMode);
           setIsGoogleTilesActive(true);
           setStatus("Google 3D Tiles loaded; base layer active");
         })
@@ -465,12 +480,8 @@ export default function App() {
     setLayerMode(mode);
     setGoogleTilesFrozen(googleTilesetRef.current, false);
 
-    if (googleTilesetRef.current) {
-      googleTilesetRef.current.show = mode === "hybrid";
-    }
-
     if (viewer) {
-      forceRender(viewer);
+      applyLayerMode(viewer, googleTilesetRef.current, mode);
       setStatus(mode === "hybrid" ? "Google 3D layer visible" : "Base globe only");
     }
   }, []);
@@ -526,12 +537,11 @@ export default function App() {
 
     unlockCamera();
     tuneCameraControls(viewer);
-    viewer.scene.globe.show = true;
+    applyLayerMode(viewer, googleTilesetRef.current, layerMode);
     setCamera(viewer, initialCamera, false);
     setCameraState(cameraFromViewer(viewer));
-    forceRender(viewer);
     setStatus("Camera reset to Portland");
-  }, []);
+  }, [layerMode]);
 
   const handleStopCamera = useCallback(() => {
     const viewer = viewerRef.current;

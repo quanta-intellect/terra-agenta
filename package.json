@@ -7,7 +7,7 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
-    "dev:renderer": "vite --host 127.0.0.1",
+    "dev:renderer": "vite --host 127.0.0.1 --strictPort",
     "dev:electron": "wait-on http://127.0.0.1:5173 && tsc -p tsconfig.electron.json && electron .",
     "build": "tsc -p tsconfig.json && vite build && tsc -p tsconfig.electron.json",
     "preview": "vite preview --host 127.0.0.1",
