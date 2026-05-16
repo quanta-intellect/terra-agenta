@@ -137,7 +137,9 @@ export default function App() {
       })
     );
     viewer.scene.globe.baseColor = Color.fromCssColorString("#0f1518");
-    viewer.scene.skyAtmosphere.show = true;
+    if (viewer.scene.skyAtmosphere) {
+      viewer.scene.skyAtmosphere.show = true;
+    }
     viewer.scene.debugShowFramesPerSecond = false;
     setCamera(viewer, initialCamera, false);
     setCameraState(cameraFromViewer(viewer));
@@ -149,7 +151,6 @@ export default function App() {
 
     if (googleTilesUrl) {
       setStatus("Loading Google 3D Tiles");
-      viewer.scene.globe.show = false;
       fetch(googleTilesUrl)
         .then(async (response) => {
           if (!response.ok) {
@@ -175,6 +176,8 @@ export default function App() {
         .then((tileset) => {
           tileset.showCreditsOnScreen = true;
           viewer.scene.primitives.add(tileset);
+          setCamera(viewer, initialCamera, false);
+          viewer.scene.globe.show = false;
           setIsGoogleTilesActive(true);
           setStatus("Google 3D Tiles active");
         })
@@ -221,6 +224,16 @@ export default function App() {
     setCaptures((current) => [capture, ...current].slice(0, 6));
     setStatus("Captured current view");
   }, [captures.length]);
+
+  const toggleBaseGlobe = useCallback(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) {
+      return;
+    }
+
+    viewer.scene.globe.show = !viewer.scene.globe.show;
+    setStatus(viewer.scene.globe.show ? "Base globe visible" : "Base globe hidden");
+  }, []);
 
   return (
     <main className="app-shell">
@@ -295,6 +308,10 @@ export default function App() {
           <button className="primary-action" onClick={captureScreenshot}>
             <Camera size={16} aria-hidden="true" />
             Capture current view
+          </button>
+          <button className="secondary-action" onClick={toggleBaseGlobe}>
+            <Globe2 size={16} aria-hidden="true" />
+            Toggle base globe
           </button>
           <p className="status-line">{status}</p>
           {error ? <p className="error-line">{error}</p> : null}

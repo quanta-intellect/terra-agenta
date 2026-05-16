@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.5.0",
-    "cesium": "^1.129.0",
+    "cesium": "^1.135.0",
     "lucide-react": "^0.511.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
@@ -30,8 +30,5 @@
     "typescript": "^5.8.3",
     "vite": "^6.3.5",
     "wait-on": "^8.0.3"
-  },
-  "overrides": {
-    "@zip.js/zip.js": "2.7.54"
   }
 }

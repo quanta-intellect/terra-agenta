@@ -124,7 +124,8 @@ button {
 }
 
 .preset-button,
-.primary-action {
+.primary-action,
+.secondary-action {
   border: 1px solid #314149;
   border-radius: 8px;
   background: #182228;
@@ -147,13 +148,15 @@ button {
 }
 
 .preset-button:hover,
-.primary-action:hover {
+.primary-action:hover,
+.secondary-action:hover {
   background: #202c32;
   border-color: #55706d;
 }
 
 .preset-button:active,
-.primary-action:active {
+.primary-action:active,
+.secondary-action:active {
   transform: translateY(1px);
 }
 
@@ -198,13 +201,19 @@ button {
   white-space: nowrap;
 }
 
-.primary-action {
+.primary-action,
+.secondary-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   min-height: 42px;
   padding: 10px 12px;
+}
+
+.secondary-action {
+  background: #121a1f;
+  color: #cbd8d5;
 }
 
 .status-line,
