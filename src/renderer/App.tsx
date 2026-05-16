@@ -82,6 +82,11 @@ const qualitySettings: Record<
   }
 };
 
+function forceRender(viewer: Viewer) {
+  viewer.scene.requestRender();
+  viewer.render();
+}
+
 function cameraFromViewer(viewer: Viewer): CameraState {
   const cartographic = Cartographic.fromCartesian(viewer.camera.positionWC);
   return {
@@ -95,6 +100,7 @@ function cameraFromViewer(viewer: Viewer): CameraState {
 }
 
 function setCamera(viewer: Viewer, camera: CameraState, fly = true) {
+  viewer.scene.screenSpaceCameraController.enableInputs = true;
   viewer.camera.cancelFlight();
   const destination = Cartesian3.fromDegrees(camera.lon, camera.lat, camera.altitude);
   const orientation = new HeadingPitchRoll(
@@ -104,11 +110,22 @@ function setCamera(viewer: Viewer, camera: CameraState, fly = true) {
   );
 
   if (fly) {
-    viewer.camera.flyTo({ destination, orientation, duration: 0.75 });
+    viewer.camera.flyTo({
+      destination,
+      orientation,
+      duration: 0.75,
+      complete: () => {
+        stopCamera(viewer);
+        forceRender(viewer);
+      },
+      cancel: () => forceRender(viewer)
+    });
+    viewer.scene.requestRender();
     return;
   }
 
   viewer.camera.setView({ destination, orientation });
+  forceRender(viewer);
 }
 
 function tuneCameraControls(viewer: Viewer) {
@@ -202,7 +219,7 @@ export default function App() {
   });
   const [captures, setCaptures] = useState<CaptureRecord[]>([]);
   const [qualityMode, setQualityMode] = useState<QualityMode>("fast");
-  const [layerMode, setLayerMode] = useState<LayerMode>(googleTilesKey ? "hybrid" : "base");
+  const [layerMode, setLayerMode] = useState<LayerMode>("base");
   const [isGoogleTilesActive, setIsGoogleTilesActive] = useState(false);
   const [status, setStatus] = useState("Booting globe");
   const [error, setError] = useState<string | null>(null);
@@ -216,6 +233,7 @@ export default function App() {
     if (viewer) {
       viewer.scene.screenSpaceCameraController.enableInputs = true;
       tuneCameraControls(viewer);
+      forceRender(viewer);
     }
   }, []);
 
@@ -362,9 +380,9 @@ export default function App() {
           tileset.show = layerMode === "hybrid";
           viewer.scene.primitives.add(tileset);
           applyQualityMode(viewer, tileset, qualityMode);
-          setCamera(viewer, initialCamera, false);
+          forceRender(viewer);
           setIsGoogleTilesActive(true);
-          setStatus("Google 3D Tiles active over base globe");
+          setStatus("Google 3D Tiles loaded; base layer active");
         })
         .catch((tilesError: unknown) => {
           console.error(tilesError);
@@ -416,6 +434,7 @@ export default function App() {
 
     if (viewer) {
       applyQualityMode(viewer, googleTilesetRef.current, mode);
+      forceRender(viewer);
       setStatus(`${qualitySettings[mode].label} navigation mode`);
     }
   }, []);
@@ -430,7 +449,7 @@ export default function App() {
     }
 
     if (viewer) {
-      viewer.scene.requestRender();
+      forceRender(viewer);
       setStatus(mode === "hybrid" ? "Google 3D layer visible" : "Base globe only");
     }
   }, []);
@@ -443,7 +462,7 @@ export default function App() {
     }
 
     tileset.debugFreezeFrame = !tileset.debugFreezeFrame;
-    viewer.scene.requestRender();
+    forceRender(viewer);
     setStatus(tileset.debugFreezeFrame ? "Google 3D tiles frozen" : "Google 3D tiles streaming");
   }, []);
 
@@ -474,6 +493,7 @@ export default function App() {
 
     unlockCamera();
     viewer.scene.globe.show = !viewer.scene.globe.show;
+    forceRender(viewer);
     setStatus(viewer.scene.globe.show ? "Base globe visible" : "Base globe hidden");
   }, []);
 
@@ -488,6 +508,7 @@ export default function App() {
     viewer.scene.globe.show = true;
     setCamera(viewer, initialCamera, false);
     setCameraState(cameraFromViewer(viewer));
+    forceRender(viewer);
     setStatus("Camera reset to Portland");
   }, []);
 
@@ -504,6 +525,7 @@ export default function App() {
     viewer.scene.screenSpaceCameraController.enableInputs = false;
     setCameraState(cameraFromViewer(viewer));
     setCameraDiagnostics({ lock: "on", driftMeters: 0 });
+    forceRender(viewer);
     setStatus("Camera locked");
   }, []);
 
