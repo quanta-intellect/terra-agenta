@@ -41,6 +41,7 @@ const presets = [
 
 const initialCamera: CameraState = presets[0].camera;
 type QualityMode = "fast" | "balanced" | "sharp";
+type LayerMode = "base" | "hybrid";
 interface CameraLock {
   position: Cartesian3;
   direction: Cartesian3;
@@ -127,6 +128,12 @@ function stopCamera(viewer: Viewer) {
   viewer.clock.canAnimate = false;
 }
 
+function setGoogleTilesFrozen(tileset: Cesium3DTileset | null, frozen: boolean) {
+  if (tileset) {
+    tileset.debugFreezeFrame = frozen;
+  }
+}
+
 function lockCameraAtCurrentView(viewer: Viewer) {
   stopCamera(viewer);
   viewer.camera.setView({
@@ -195,6 +202,7 @@ export default function App() {
   });
   const [captures, setCaptures] = useState<CaptureRecord[]>([]);
   const [qualityMode, setQualityMode] = useState<QualityMode>("fast");
+  const [layerMode, setLayerMode] = useState<LayerMode>(googleTilesKey ? "hybrid" : "base");
   const [isGoogleTilesActive, setIsGoogleTilesActive] = useState(false);
   const [status, setStatus] = useState("Booting globe");
   const [error, setError] = useState<string | null>(null);
@@ -203,6 +211,7 @@ export default function App() {
     const viewer = viewerRef.current;
     cameraLockRef.current = null;
     cameraDriftRef.current = 0;
+    setGoogleTilesFrozen(googleTilesetRef.current, false);
     setCameraDiagnostics({ lock: "off", driftMeters: 0 });
     if (viewer) {
       viewer.scene.screenSpaceCameraController.enableInputs = true;
@@ -214,10 +223,10 @@ export default function App() {
     () => ({
       mode: "globe",
       camera,
-      activeTileset: isGoogleTilesActive ? "google-photorealistic" : "cesium-world",
+      activeTileset: isGoogleTilesActive && layerMode === "hybrid" ? "google-photorealistic" : "cesium-world",
       lastCapture: captures[0]
     }),
-    [camera, captures, isGoogleTilesActive]
+    [camera, captures, isGoogleTilesActive, layerMode]
   );
 
   useEffect(() => {
@@ -350,6 +359,7 @@ export default function App() {
         .then((tileset) => {
           tileset.showCreditsOnScreen = true;
           googleTilesetRef.current = tileset;
+          tileset.show = layerMode === "hybrid";
           viewer.scene.primitives.add(tileset);
           applyQualityMode(viewer, tileset, qualityMode);
           setCamera(viewer, initialCamera, false);
@@ -410,6 +420,33 @@ export default function App() {
     }
   }, []);
 
+  const handleLayerMode = useCallback((mode: LayerMode) => {
+    const viewer = viewerRef.current;
+    setLayerMode(mode);
+    setGoogleTilesFrozen(googleTilesetRef.current, false);
+
+    if (googleTilesetRef.current) {
+      googleTilesetRef.current.show = mode === "hybrid";
+    }
+
+    if (viewer) {
+      viewer.scene.requestRender();
+      setStatus(mode === "hybrid" ? "Google 3D layer visible" : "Base globe only");
+    }
+  }, []);
+
+  const handleFreezeGoogleTiles = useCallback(() => {
+    const viewer = viewerRef.current;
+    const tileset = googleTilesetRef.current;
+    if (!viewer || !tileset) {
+      return;
+    }
+
+    tileset.debugFreezeFrame = !tileset.debugFreezeFrame;
+    viewer.scene.requestRender();
+    setStatus(tileset.debugFreezeFrame ? "Google 3D tiles frozen" : "Google 3D tiles streaming");
+  }, []);
+
   const captureScreenshot = useCallback(() => {
     const viewer = viewerRef.current;
     if (!viewer) {
@@ -463,6 +500,7 @@ export default function App() {
     lockCameraAtCurrentView(viewer);
     cameraLockRef.current = snapshotCamera(viewer);
     cameraDriftRef.current = 0;
+    setGoogleTilesFrozen(googleTilesetRef.current, true);
     viewer.scene.screenSpaceCameraController.enableInputs = false;
     setCameraState(cameraFromViewer(viewer));
     setCameraDiagnostics({ lock: "on", driftMeters: 0 });
@@ -521,6 +559,28 @@ export default function App() {
 
         <section className="panel-section">
           <div className="section-heading">
+            <Globe2 size={16} aria-hidden="true" />
+            <h2>Layers</h2>
+          </div>
+          <div className="segmented-control two-up" aria-label="Visible layers">
+            <button
+              className={layerMode === "base" ? "segment-button active" : "segment-button"}
+              onClick={() => handleLayerMode("base")}
+            >
+              Base
+            </button>
+            <button
+              className={layerMode === "hybrid" ? "segment-button active" : "segment-button"}
+              onClick={() => handleLayerMode("hybrid")}
+              disabled={!isGoogleTilesActive}
+            >
+              Google 3D
+            </button>
+          </div>
+        </section>
+
+        <section className="panel-section">
+          <div className="section-heading">
             <Crosshair size={16} aria-hidden="true" />
             <h2>World State</h2>
           </div>
@@ -572,6 +632,10 @@ export default function App() {
           <button className="secondary-action" onClick={toggleBaseGlobe}>
             <Globe2 size={16} aria-hidden="true" />
             Toggle base globe
+          </button>
+          <button className="secondary-action" onClick={handleFreezeGoogleTiles} disabled={!isGoogleTilesActive}>
+            <Square size={15} aria-hidden="true" />
+            Freeze Google tiles
           </button>
           <button className="secondary-action" onClick={resetCamera}>
             <RotateCcw size={16} aria-hidden="true" />
