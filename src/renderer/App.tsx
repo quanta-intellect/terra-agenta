@@ -205,6 +205,7 @@ function restoreCameraSnapshot(viewer: Viewer, snapshot: CameraLock) {
       up: snapshot.up
     }
   });
+  viewer.camera.lookAtTransform(Matrix4.IDENTITY);
 }
 
 function applyQualityMode(viewer: Viewer, tileset: Cesium3DTileset | null, mode: QualityMode) {
@@ -213,8 +214,13 @@ function applyQualityMode(viewer: Viewer, tileset: Cesium3DTileset | null, mode:
 
   if (tileset) {
     tileset.maximumScreenSpaceError = settings.maximumScreenSpaceError;
-    tileset.dynamicScreenSpaceError = true;
-    tileset.dynamicScreenSpaceErrorDensity = 0.00028;
+    tileset.dynamicScreenSpaceError = false;
+    tileset.foveatedScreenSpaceError = false;
+    tileset.skipLevelOfDetail = true;
+    tileset.immediatelyLoadDesiredLevelOfDetail = true;
+    tileset.loadSiblings = true;
+    tileset.cullRequestsWhileMoving = false;
+    tileset.dynamicScreenSpaceErrorDensity = 0.0002;
     tileset.dynamicScreenSpaceErrorFactor = settings.dynamicScreenSpaceErrorFactor;
   }
 }
@@ -364,7 +370,10 @@ export default function App() {
       }
     };
     const removeMoveEndListener = viewer.camera.moveEnd.addEventListener(lockSettledMotion);
+    const removePreUpdateListener = viewer.scene.preUpdate.addEventListener(enforceCameraLock);
+    const removePostUpdateListener = viewer.scene.postUpdate.addEventListener(enforceCameraLock);
     const removePreRenderListener = viewer.scene.preRender.addEventListener(enforceCameraLock);
+    const removePostRenderListener = viewer.scene.postRender.addEventListener(enforceCameraLock);
     const diagnosticsTimer = window.setInterval(() => {
       setCameraDiagnostics({
         lock: cameraLockRef.current ? "on" : "off",
@@ -403,11 +412,14 @@ export default function App() {
         },
         {
           maximumScreenSpaceError: qualitySettings[qualityMode].maximumScreenSpaceError,
-          dynamicScreenSpaceError: true,
-          dynamicScreenSpaceErrorDensity: 0.00028,
+          dynamicScreenSpaceError: false,
+          dynamicScreenSpaceErrorDensity: 0.0002,
           dynamicScreenSpaceErrorFactor: qualitySettings[qualityMode].dynamicScreenSpaceErrorFactor,
-          foveatedScreenSpaceError: true,
-          foveatedMinimumScreenSpaceErrorRelaxation: 0.4,
+          foveatedScreenSpaceError: false,
+          skipLevelOfDetail: true,
+          immediatelyLoadDesiredLevelOfDetail: true,
+          loadSiblings: true,
+          cullRequestsWhileMoving: false,
           enableCollision: false
         }
       )
@@ -431,7 +443,10 @@ export default function App() {
     return () => {
       removeCameraListener();
       removeMoveEndListener();
+      removePreUpdateListener();
+      removePostUpdateListener();
       removePreRenderListener();
+      removePostRenderListener();
       window.clearInterval(diagnosticsTimer);
       if (wheelStopTimer) {
         window.clearTimeout(wheelStopTimer);
@@ -552,12 +567,13 @@ export default function App() {
     lockCameraAtCurrentView(viewer);
     cameraLockRef.current = snapshotCamera(viewer);
     cameraDriftRef.current = 0;
-    setGoogleTilesFrozen(googleTilesetRef.current, true);
+    setGoogleTilesFrozen(googleTilesetRef.current, false);
+    resumeRenderLoop(viewer);
     viewer.scene.screenSpaceCameraController.enableInputs = false;
     setCameraState(cameraFromViewer(viewer));
-    freezeRenderLoop(viewer);
-    setCameraDiagnostics({ lock: "on", driftMeters: 0, renderLoop: "frozen" });
-    setStatus("Camera and render loop locked");
+    forceRender(viewer);
+    setCameraDiagnostics({ lock: "on", driftMeters: 0, renderLoop: "running" });
+    setStatus("Camera locked; tiles still rendering");
   }, []);
 
   return (
