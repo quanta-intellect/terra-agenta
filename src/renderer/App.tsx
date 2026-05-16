@@ -1,4 +1,4 @@
-import { Camera, CameraIcon, Crosshair, Globe2, Image, LocateFixed } from "lucide-react";
+import { Camera, CameraIcon, Crosshair, Globe2, Image, LocateFixed, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Cartesian3,
@@ -53,6 +53,7 @@ function cameraFromViewer(viewer: Viewer): CameraState {
 }
 
 function setCamera(viewer: Viewer, camera: CameraState, fly = true) {
+  viewer.camera.cancelFlight();
   const destination = Cartesian3.fromDegrees(camera.lon, camera.lat, camera.altitude);
   const orientation = new HeadingPitchRoll(
     CesiumMath.toRadians(camera.heading),
@@ -140,6 +141,7 @@ export default function App() {
     if (viewer.scene.skyAtmosphere) {
       viewer.scene.skyAtmosphere.show = true;
     }
+    viewer.scene.screenSpaceCameraController.enableCollisionDetection = false;
     viewer.scene.debugShowFramesPerSecond = false;
     setCamera(viewer, initialCamera, false);
     setCameraState(cameraFromViewer(viewer));
@@ -170,16 +172,16 @@ export default function App() {
         },
         {
           maximumScreenSpaceError: 16,
-          dynamicScreenSpaceError: true
+          dynamicScreenSpaceError: true,
+          enableCollision: false
         }
       )
         .then((tileset) => {
           tileset.showCreditsOnScreen = true;
           viewer.scene.primitives.add(tileset);
           setCamera(viewer, initialCamera, false);
-          viewer.scene.globe.show = false;
           setIsGoogleTilesActive(true);
-          setStatus("Google 3D Tiles active");
+          setStatus("Google 3D Tiles active over base globe");
         })
         .catch((tilesError: unknown) => {
           console.error(tilesError);
@@ -233,6 +235,19 @@ export default function App() {
 
     viewer.scene.globe.show = !viewer.scene.globe.show;
     setStatus(viewer.scene.globe.show ? "Base globe visible" : "Base globe hidden");
+  }, []);
+
+  const resetCamera = useCallback(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) {
+      return;
+    }
+
+    viewer.scene.screenSpaceCameraController.enableCollisionDetection = false;
+    viewer.scene.globe.show = true;
+    setCamera(viewer, initialCamera, false);
+    setCameraState(cameraFromViewer(viewer));
+    setStatus("Camera reset to Portland");
   }, []);
 
   return (
@@ -312,6 +327,10 @@ export default function App() {
           <button className="secondary-action" onClick={toggleBaseGlobe}>
             <Globe2 size={16} aria-hidden="true" />
             Toggle base globe
+          </button>
+          <button className="secondary-action" onClick={resetCamera}>
+            <RotateCcw size={16} aria-hidden="true" />
+            Reset camera
           </button>
           <p className="status-line">{status}</p>
           {error ? <p className="error-line">{error}</p> : null}
