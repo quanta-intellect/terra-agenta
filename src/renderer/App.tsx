@@ -41,6 +41,11 @@ const presets = [
 
 const initialCamera: CameraState = presets[0].camera;
 type QualityMode = "fast" | "balanced" | "sharp";
+interface CameraLock {
+  position: Cartesian3;
+  direction: Cartesian3;
+  up: Cartesian3;
+}
 
 const qualitySettings: Record<
   QualityMode,
@@ -126,6 +131,24 @@ function lockCameraAtCurrentView(viewer: Viewer) {
   viewer.scene.requestRender();
 }
 
+function snapshotCamera(viewer: Viewer): CameraLock {
+  return {
+    position: Cartesian3.clone(viewer.camera.positionWC),
+    direction: Cartesian3.clone(viewer.camera.directionWC),
+    up: Cartesian3.clone(viewer.camera.upWC)
+  };
+}
+
+function restoreCameraSnapshot(viewer: Viewer, snapshot: CameraLock) {
+  viewer.camera.setView({
+    destination: snapshot.position,
+    orientation: {
+      direction: snapshot.direction,
+      up: snapshot.up
+    }
+  });
+}
+
 function applyQualityMode(viewer: Viewer, tileset: Cesium3DTileset | null, mode: QualityMode) {
   const settings = qualitySettings[mode];
   viewer.resolutionScale = settings.resolutionScale;
@@ -158,12 +181,22 @@ export default function App() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<Viewer | null>(null);
   const googleTilesetRef = useRef<Cesium3DTileset | null>(null);
+  const cameraLockRef = useRef<CameraLock | null>(null);
   const [camera, setCameraState] = useState<CameraState>(initialCamera);
   const [captures, setCaptures] = useState<CaptureRecord[]>([]);
   const [qualityMode, setQualityMode] = useState<QualityMode>("fast");
   const [isGoogleTilesActive, setIsGoogleTilesActive] = useState(false);
   const [status, setStatus] = useState("Booting globe");
   const [error, setError] = useState<string | null>(null);
+
+  const unlockCamera = useCallback(() => {
+    const viewer = viewerRef.current;
+    cameraLockRef.current = null;
+    if (viewer) {
+      viewer.scene.screenSpaceCameraController.enableInputs = true;
+      tuneCameraControls(viewer);
+    }
+  }, []);
 
   const worldState = useMemo<WorldState>(
     () => ({
@@ -224,7 +257,11 @@ export default function App() {
       setCameraState(cameraFromViewer(viewer));
     });
     let wheelStopTimer: number | undefined;
-    const cancelActiveMotion = () => stopCamera(viewer);
+    const cancelActiveMotion = () => {
+      cameraLockRef.current = null;
+      viewer.scene.screenSpaceCameraController.enableInputs = true;
+      stopCamera(viewer);
+    };
     const lockSettledMotion = () => lockCameraAtCurrentView(viewer);
     const scheduleWheelLock = () => {
       stopCamera(viewer);
@@ -236,7 +273,13 @@ export default function App() {
         wheelStopTimer = undefined;
       }, 120);
     };
+    const enforceCameraLock = () => {
+      if (cameraLockRef.current) {
+        restoreCameraSnapshot(viewer, cameraLockRef.current);
+      }
+    };
     const removeMoveEndListener = viewer.camera.moveEnd.addEventListener(lockSettledMotion);
+    const removePreRenderListener = viewer.scene.preRender.addEventListener(enforceCameraLock);
     viewer.canvas.addEventListener("pointerdown", cancelActiveMotion);
     viewer.canvas.addEventListener("pointerup", lockSettledMotion);
     viewer.canvas.addEventListener("pointercancel", lockSettledMotion);
@@ -296,6 +339,7 @@ export default function App() {
     return () => {
       removeCameraListener();
       removeMoveEndListener();
+      removePreRenderListener();
       if (wheelStopTimer) {
         window.clearTimeout(wheelStopTimer);
       }
@@ -309,6 +353,7 @@ export default function App() {
       window.removeEventListener("mouseup", lockSettledMotion);
       window.removeEventListener("blur", lockSettledMotion);
       googleTilesetRef.current = null;
+      cameraLockRef.current = null;
       viewer.destroy();
       viewerRef.current = null;
     };
@@ -319,6 +364,7 @@ export default function App() {
     if (!viewer) {
       return;
     }
+    unlockCamera();
     setStatus("Flying");
     setCamera(viewer, nextCamera);
     window.setTimeout(() => setStatus("Ready"), 850);
@@ -359,6 +405,7 @@ export default function App() {
       return;
     }
 
+    unlockCamera();
     viewer.scene.globe.show = !viewer.scene.globe.show;
     setStatus(viewer.scene.globe.show ? "Base globe visible" : "Base globe hidden");
   }, []);
@@ -369,6 +416,7 @@ export default function App() {
       return;
     }
 
+    unlockCamera();
     tuneCameraControls(viewer);
     viewer.scene.globe.show = true;
     setCamera(viewer, initialCamera, false);
@@ -383,8 +431,10 @@ export default function App() {
     }
 
     lockCameraAtCurrentView(viewer);
+    cameraLockRef.current = snapshotCamera(viewer);
+    viewer.scene.screenSpaceCameraController.enableInputs = false;
     setCameraState(cameraFromViewer(viewer));
-    setStatus("Camera stopped");
+    setStatus("Camera locked");
   }, []);
 
   return (
