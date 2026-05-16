@@ -3,18 +3,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Cartesian3,
   Cartographic,
-  Cesium3DTileset,
   Color,
   EllipsoidTerrainProvider,
   HeadingPitchRoll,
   Math as CesiumMath,
   UrlTemplateImageryProvider,
-  Viewer
+  Viewer,
+  createGooglePhotorealistic3DTileset
 } from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import type { CameraState, CaptureRecord, WorldState } from "../shared/world";
 
-const googleTilesKey = import.meta.env.VITE_GOOGLE_MAP_TILES_API_KEY;
+const googleTilesKey =
+  import.meta.env.VITE_GOOGLE_MAP_TILES_API_KEY ?? import.meta.env.VITE_GOOGLE_MAPS_TILES_API_KEY;
+const googleTilesUrl = googleTilesKey
+  ? `https://tile.googleapis.com/v1/3dtiles/root.json?key=${googleTilesKey}`
+  : null;
 
 const presets = [
   {
@@ -62,6 +66,22 @@ function setCamera(viewer: Viewer, camera: CameraState, fly = true) {
   }
 
   viewer.camera.setView({ destination, orientation });
+}
+
+function formatLoadError(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return "Unknown Cesium load error";
+  }
 }
 
 export default function App() {
@@ -127,20 +147,41 @@ export default function App() {
       setCameraState(cameraFromViewer(viewer));
     });
 
-    if (googleTilesKey) {
+    if (googleTilesUrl) {
       setStatus("Loading Google 3D Tiles");
-      Cesium3DTileset.fromUrl(`https://tile.googleapis.com/v1/3dtiles/root.json?key=${googleTilesKey}`, {
-        showCreditsOnScreen: true
-      })
+      viewer.scene.globe.show = false;
+      fetch(googleTilesUrl)
+        .then(async (response) => {
+          if (!response.ok) {
+            const body = await response.text();
+            throw new Error(`Google preflight failed (${response.status}): ${body.slice(0, 240)}`);
+          }
+        })
+        .catch((preflightError: unknown) => {
+          console.error(preflightError);
+          setError(`Google 3D Tiles preflight failed: ${formatLoadError(preflightError)}`);
+        });
+
+      createGooglePhotorealistic3DTileset(
+        {
+          key: googleTilesKey,
+          onlyUsingWithGoogleGeocoder: true
+        },
+        {
+          maximumScreenSpaceError: 16,
+          dynamicScreenSpaceError: true
+        }
+      )
         .then((tileset) => {
+          tileset.showCreditsOnScreen = true;
           viewer.scene.primitives.add(tileset);
-          viewer.scene.globe.show = false;
           setIsGoogleTilesActive(true);
           setStatus("Google 3D Tiles active");
         })
         .catch((tilesError: unknown) => {
           console.error(tilesError);
-          setError("Google 3D Tiles did not load. Falling back to the base globe.");
+          viewer.scene.globe.show = true;
+          setError(`Google 3D Tiles did not load: ${formatLoadError(tilesError)}`);
           setStatus("Ready with base globe");
         });
     }
