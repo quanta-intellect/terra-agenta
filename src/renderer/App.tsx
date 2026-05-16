@@ -47,6 +47,11 @@ interface CameraLock {
   up: Cartesian3;
 }
 
+interface CameraDiagnostics {
+  lock: "off" | "on";
+  driftMeters: number;
+}
+
 const qualitySettings: Record<
   QualityMode,
   {
@@ -182,7 +187,12 @@ export default function App() {
   const viewerRef = useRef<Viewer | null>(null);
   const googleTilesetRef = useRef<Cesium3DTileset | null>(null);
   const cameraLockRef = useRef<CameraLock | null>(null);
+  const cameraDriftRef = useRef(0);
   const [camera, setCameraState] = useState<CameraState>(initialCamera);
+  const [cameraDiagnostics, setCameraDiagnostics] = useState<CameraDiagnostics>({
+    lock: "off",
+    driftMeters: 0
+  });
   const [captures, setCaptures] = useState<CaptureRecord[]>([]);
   const [qualityMode, setQualityMode] = useState<QualityMode>("fast");
   const [isGoogleTilesActive, setIsGoogleTilesActive] = useState(false);
@@ -192,6 +202,8 @@ export default function App() {
   const unlockCamera = useCallback(() => {
     const viewer = viewerRef.current;
     cameraLockRef.current = null;
+    cameraDriftRef.current = 0;
+    setCameraDiagnostics({ lock: "off", driftMeters: 0 });
     if (viewer) {
       viewer.scene.screenSpaceCameraController.enableInputs = true;
       tuneCameraControls(viewer);
@@ -225,6 +237,11 @@ export default function App() {
       timeline: false,
       navigationHelpButton: false,
       terrainProvider: new EllipsoidTerrainProvider(),
+      skyBox: false,
+      skyAtmosphere: false,
+      shouldAnimate: false,
+      requestRenderMode: true,
+      maximumRenderTimeChange: Infinity,
       useBrowserRecommendedResolution: true,
       contextOptions: {
         webgl: {
@@ -235,6 +252,10 @@ export default function App() {
 
     viewerRef.current = viewer;
     stopCamera(viewer);
+    viewer.scene.backgroundColor = Color.fromCssColorString("#0b0f12");
+    viewer.scene.sun = undefined;
+    viewer.scene.moon = undefined;
+    viewer.scene.sunBloom = false;
     viewer.imageryLayers.removeAll();
     viewer.imageryLayers.addImageryProvider(
       new UrlTemplateImageryProvider({
@@ -244,9 +265,6 @@ export default function App() {
       })
     );
     viewer.scene.globe.baseColor = Color.fromCssColorString("#0f1518");
-    if (viewer.scene.skyAtmosphere) {
-      viewer.scene.skyAtmosphere.show = true;
-    }
     applyQualityMode(viewer, null, qualityMode);
     viewer.scene.debugShowFramesPerSecond = false;
     setCamera(viewer, initialCamera, false);
@@ -275,11 +293,21 @@ export default function App() {
     };
     const enforceCameraLock = () => {
       if (cameraLockRef.current) {
+        cameraDriftRef.current = Math.max(
+          cameraDriftRef.current,
+          Cartesian3.distance(viewer.camera.positionWC, cameraLockRef.current.position)
+        );
         restoreCameraSnapshot(viewer, cameraLockRef.current);
       }
     };
     const removeMoveEndListener = viewer.camera.moveEnd.addEventListener(lockSettledMotion);
     const removePreRenderListener = viewer.scene.preRender.addEventListener(enforceCameraLock);
+    const diagnosticsTimer = window.setInterval(() => {
+      setCameraDiagnostics({
+        lock: cameraLockRef.current ? "on" : "off",
+        driftMeters: Number(cameraDriftRef.current.toFixed(3))
+      });
+    }, 500);
     viewer.canvas.addEventListener("pointerdown", cancelActiveMotion);
     viewer.canvas.addEventListener("pointerup", lockSettledMotion);
     viewer.canvas.addEventListener("pointercancel", lockSettledMotion);
@@ -340,6 +368,7 @@ export default function App() {
       removeCameraListener();
       removeMoveEndListener();
       removePreRenderListener();
+      window.clearInterval(diagnosticsTimer);
       if (wheelStopTimer) {
         window.clearTimeout(wheelStopTimer);
       }
@@ -354,6 +383,7 @@ export default function App() {
       window.removeEventListener("blur", lockSettledMotion);
       googleTilesetRef.current = null;
       cameraLockRef.current = null;
+      cameraDriftRef.current = 0;
       viewer.destroy();
       viewerRef.current = null;
     };
@@ -432,8 +462,10 @@ export default function App() {
 
     lockCameraAtCurrentView(viewer);
     cameraLockRef.current = snapshotCamera(viewer);
+    cameraDriftRef.current = 0;
     viewer.scene.screenSpaceCameraController.enableInputs = false;
     setCameraState(cameraFromViewer(viewer));
+    setCameraDiagnostics({ lock: "on", driftMeters: 0 });
     setStatus("Camera locked");
   }, []);
 
@@ -516,6 +548,14 @@ export default function App() {
             <div>
               <dt>Layer</dt>
               <dd>{worldState.activeTileset === "google-photorealistic" ? "Google 3D" : "Base globe"}</dd>
+            </div>
+            <div>
+              <dt>Lock</dt>
+              <dd>{cameraDiagnostics.lock}</dd>
+            </div>
+            <div>
+              <dt>Drift</dt>
+              <dd>{cameraDiagnostics.driftMeters} m</dd>
             </div>
           </dl>
         </section>
