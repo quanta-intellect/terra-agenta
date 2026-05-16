@@ -51,6 +51,7 @@ interface CameraLock {
 interface CameraDiagnostics {
   lock: "off" | "on";
   driftMeters: number;
+  renderLoop: "running" | "frozen";
 }
 
 const qualitySettings: Record<
@@ -87,6 +88,17 @@ function forceRender(viewer: Viewer) {
   viewer.render();
 }
 
+function resumeRenderLoop(viewer: Viewer) {
+  viewer.useDefaultRenderLoop = true;
+  viewer.targetFrameRate = 45;
+  viewer.scene.requestRender();
+}
+
+function freezeRenderLoop(viewer: Viewer) {
+  forceRender(viewer);
+  viewer.useDefaultRenderLoop = false;
+}
+
 function cameraFromViewer(viewer: Viewer): CameraState {
   const cartographic = Cartographic.fromCartesian(viewer.camera.positionWC);
   return {
@@ -100,6 +112,7 @@ function cameraFromViewer(viewer: Viewer): CameraState {
 }
 
 function setCamera(viewer: Viewer, camera: CameraState, fly = true) {
+  resumeRenderLoop(viewer);
   viewer.scene.screenSpaceCameraController.enableInputs = true;
   viewer.camera.cancelFlight();
   const destination = Cartesian3.fromDegrees(camera.lon, camera.lat, camera.altitude);
@@ -215,7 +228,8 @@ export default function App() {
   const [camera, setCameraState] = useState<CameraState>(initialCamera);
   const [cameraDiagnostics, setCameraDiagnostics] = useState<CameraDiagnostics>({
     lock: "off",
-    driftMeters: 0
+    driftMeters: 0,
+    renderLoop: "running"
   });
   const [captures, setCaptures] = useState<CaptureRecord[]>([]);
   const [qualityMode, setQualityMode] = useState<QualityMode>("fast");
@@ -229,8 +243,9 @@ export default function App() {
     cameraLockRef.current = null;
     cameraDriftRef.current = 0;
     setGoogleTilesFrozen(googleTilesetRef.current, false);
-    setCameraDiagnostics({ lock: "off", driftMeters: 0 });
+    setCameraDiagnostics({ lock: "off", driftMeters: 0, renderLoop: "running" });
     if (viewer) {
+      resumeRenderLoop(viewer);
       viewer.scene.screenSpaceCameraController.enableInputs = true;
       tuneCameraControls(viewer);
       forceRender(viewer);
@@ -274,7 +289,8 @@ export default function App() {
         webgl: {
           preserveDrawingBuffer: true
         }
-      }
+      },
+      targetFrameRate: 45
     });
 
     viewerRef.current = viewer;
@@ -304,8 +320,12 @@ export default function App() {
     let wheelStopTimer: number | undefined;
     const cancelActiveMotion = () => {
       cameraLockRef.current = null;
+      cameraDriftRef.current = 0;
+      setGoogleTilesFrozen(googleTilesetRef.current, false);
+      resumeRenderLoop(viewer);
       viewer.scene.screenSpaceCameraController.enableInputs = true;
       stopCamera(viewer);
+      setCameraDiagnostics({ lock: "off", driftMeters: 0, renderLoop: "running" });
     };
     const lockSettledMotion = () => lockCameraAtCurrentView(viewer);
     const scheduleWheelLock = () => {
@@ -332,7 +352,8 @@ export default function App() {
     const diagnosticsTimer = window.setInterval(() => {
       setCameraDiagnostics({
         lock: cameraLockRef.current ? "on" : "off",
-        driftMeters: Number(cameraDriftRef.current.toFixed(3))
+        driftMeters: Number(cameraDriftRef.current.toFixed(3)),
+        renderLoop: viewer.useDefaultRenderLoop ? "running" : "frozen"
       });
     }, 500);
     viewer.canvas.addEventListener("pointerdown", cancelActiveMotion);
@@ -524,9 +545,9 @@ export default function App() {
     setGoogleTilesFrozen(googleTilesetRef.current, true);
     viewer.scene.screenSpaceCameraController.enableInputs = false;
     setCameraState(cameraFromViewer(viewer));
-    setCameraDiagnostics({ lock: "on", driftMeters: 0 });
-    forceRender(viewer);
-    setStatus("Camera locked");
+    freezeRenderLoop(viewer);
+    setCameraDiagnostics({ lock: "on", driftMeters: 0, renderLoop: "frozen" });
+    setStatus("Camera and render loop locked");
   }, []);
 
   return (
@@ -638,6 +659,10 @@ export default function App() {
             <div>
               <dt>Drift</dt>
               <dd>{cameraDiagnostics.driftMeters} m</dd>
+            </div>
+            <div>
+              <dt>Render</dt>
+              <dd>{cameraDiagnostics.renderLoop}</dd>
             </div>
           </dl>
         </section>
