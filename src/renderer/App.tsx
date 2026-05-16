@@ -1,4 +1,4 @@
-import { Camera, CameraIcon, Crosshair, Gauge, Globe2, Image, LocateFixed, RotateCcw } from "lucide-react";
+import { Camera, CameraIcon, Crosshair, Gauge, Globe2, Image, LocateFixed, RotateCcw, Square } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Cartesian3,
@@ -103,11 +103,27 @@ function setCamera(viewer: Viewer, camera: CameraState, fly = true) {
 function tuneCameraControls(viewer: Viewer) {
   const controller = viewer.scene.screenSpaceCameraController;
   controller.enableCollisionDetection = false;
-  controller.inertiaSpin = 0.18;
-  controller.inertiaTranslate = 0.12;
-  controller.inertiaZoom = 0.08;
-  controller.zoomFactor = 4;
+  controller.inertiaSpin = 0;
+  controller.inertiaTranslate = 0;
+  controller.inertiaZoom = 0;
+  controller.zoomFactor = 3;
   controller.minimumZoomDistance = 35;
+}
+
+function stopCamera(viewer: Viewer) {
+  viewer.camera.cancelFlight();
+  tuneCameraControls(viewer);
+  viewer.clock.shouldAnimate = false;
+  viewer.clock.canAnimate = false;
+}
+
+function lockCameraAtCurrentView(viewer: Viewer) {
+  stopCamera(viewer);
+  viewer.camera.setView({
+    destination: Cartesian3.clone(viewer.camera.positionWC),
+    orientation: new HeadingPitchRoll(viewer.camera.heading, viewer.camera.pitch, viewer.camera.roll)
+  });
+  viewer.scene.requestRender();
 }
 
 function applyQualityMode(viewer: Viewer, tileset: Cesium3DTileset | null, mode: QualityMode) {
@@ -185,6 +201,7 @@ export default function App() {
     });
 
     viewerRef.current = viewer;
+    stopCamera(viewer);
     viewer.imageryLayers.removeAll();
     viewer.imageryLayers.addImageryProvider(
       new UrlTemplateImageryProvider({
@@ -197,7 +214,6 @@ export default function App() {
     if (viewer.scene.skyAtmosphere) {
       viewer.scene.skyAtmosphere.show = true;
     }
-    tuneCameraControls(viewer);
     applyQualityMode(viewer, null, qualityMode);
     viewer.scene.debugShowFramesPerSecond = false;
     setCamera(viewer, initialCamera, false);
@@ -207,6 +223,29 @@ export default function App() {
     const removeCameraListener = viewer.camera.changed.addEventListener(() => {
       setCameraState(cameraFromViewer(viewer));
     });
+    let wheelStopTimer: number | undefined;
+    const cancelActiveMotion = () => stopCamera(viewer);
+    const lockSettledMotion = () => lockCameraAtCurrentView(viewer);
+    const scheduleWheelLock = () => {
+      stopCamera(viewer);
+      if (wheelStopTimer) {
+        window.clearTimeout(wheelStopTimer);
+      }
+      wheelStopTimer = window.setTimeout(() => {
+        lockCameraAtCurrentView(viewer);
+        wheelStopTimer = undefined;
+      }, 120);
+    };
+    const removeMoveEndListener = viewer.camera.moveEnd.addEventListener(lockSettledMotion);
+    viewer.canvas.addEventListener("pointerdown", cancelActiveMotion);
+    viewer.canvas.addEventListener("pointerup", lockSettledMotion);
+    viewer.canvas.addEventListener("pointercancel", lockSettledMotion);
+    viewer.canvas.addEventListener("pointerleave", lockSettledMotion);
+    viewer.canvas.addEventListener("wheel", scheduleWheelLock, { passive: true });
+    viewer.canvas.addEventListener("keydown", cancelActiveMotion);
+    viewer.canvas.addEventListener("keyup", lockSettledMotion);
+    window.addEventListener("mouseup", lockSettledMotion);
+    window.addEventListener("blur", lockSettledMotion);
 
     if (googleTilesUrl) {
       setStatus("Loading Google 3D Tiles");
@@ -256,6 +295,19 @@ export default function App() {
 
     return () => {
       removeCameraListener();
+      removeMoveEndListener();
+      if (wheelStopTimer) {
+        window.clearTimeout(wheelStopTimer);
+      }
+      viewer.canvas.removeEventListener("pointerdown", cancelActiveMotion);
+      viewer.canvas.removeEventListener("pointerup", lockSettledMotion);
+      viewer.canvas.removeEventListener("pointercancel", lockSettledMotion);
+      viewer.canvas.removeEventListener("pointerleave", lockSettledMotion);
+      viewer.canvas.removeEventListener("wheel", scheduleWheelLock);
+      viewer.canvas.removeEventListener("keydown", cancelActiveMotion);
+      viewer.canvas.removeEventListener("keyup", lockSettledMotion);
+      window.removeEventListener("mouseup", lockSettledMotion);
+      window.removeEventListener("blur", lockSettledMotion);
       googleTilesetRef.current = null;
       viewer.destroy();
       viewerRef.current = null;
@@ -322,6 +374,17 @@ export default function App() {
     setCamera(viewer, initialCamera, false);
     setCameraState(cameraFromViewer(viewer));
     setStatus("Camera reset to Portland");
+  }, []);
+
+  const handleStopCamera = useCallback(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) {
+      return;
+    }
+
+    lockCameraAtCurrentView(viewer);
+    setCameraState(cameraFromViewer(viewer));
+    setStatus("Camera stopped");
   }, []);
 
   return (
@@ -423,6 +486,10 @@ export default function App() {
           <button className="secondary-action" onClick={resetCamera}>
             <RotateCcw size={16} aria-hidden="true" />
             Reset camera
+          </button>
+          <button className="secondary-action" onClick={handleStopCamera}>
+            <Square size={15} aria-hidden="true" />
+            Stop camera
           </button>
           <p className="status-line">{status}</p>
           {error ? <p className="error-line">{error}</p> : null}
