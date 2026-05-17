@@ -175,9 +175,14 @@ function setGoogleTilesFrozen(tileset: Cesium3DTileset | null, frozen: boolean) 
   }
 }
 
-function applyLayerMode(viewer: Viewer, tileset: Cesium3DTileset | null, mode: LayerMode) {
+function applyLayerMode(
+  viewer: Viewer,
+  tileset: Cesium3DTileset | null,
+  mode: LayerMode,
+  hasVisibleGoogleTiles = false
+) {
   const useGoogle3D = mode === "hybrid" && Boolean(tileset);
-  viewer.scene.globe.show = !useGoogle3D;
+  viewer.scene.globe.show = !(useGoogle3D && hasVisibleGoogleTiles);
 
   if (tileset) {
     tileset.show = useGoogle3D;
@@ -251,6 +256,8 @@ export default function App() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<Viewer | null>(null);
   const googleTilesetRef = useRef<Cesium3DTileset | null>(null);
+  const googleTilesVisibleRef = useRef(false);
+  const layerModeRef = useRef<LayerMode>("base");
   const cameraLockRef = useRef<CameraLock | null>(null);
   const lockedRenderTimerRef = useRef<number | null>(null);
   const cameraDriftRef = useRef(0);
@@ -453,8 +460,16 @@ export default function App() {
           tileset.showCreditsOnScreen = true;
           googleTilesetRef.current = tileset;
           viewer.scene.primitives.add(tileset);
+          tileset.tileVisible.addEventListener(() => {
+            if (googleTilesVisibleRef.current) {
+              return;
+            }
+            googleTilesVisibleRef.current = true;
+            applyLayerMode(viewer, tileset, layerModeRef.current, true);
+            setStatus(layerModeRef.current === "hybrid" ? "Google 3D layer visible" : "Google 3D Tiles ready");
+          });
           applyQualityMode(viewer, tileset, qualityMode);
-          applyLayerMode(viewer, tileset, layerMode);
+          applyLayerMode(viewer, tileset, layerModeRef.current, googleTilesVisibleRef.current);
           setIsGoogleTilesActive(true);
           setStatus("Google 3D Tiles loaded; base layer active");
         })
@@ -491,6 +506,7 @@ export default function App() {
         lockedRenderTimerRef.current = null;
       }
       googleTilesetRef.current = null;
+      googleTilesVisibleRef.current = false;
       cameraLockRef.current = null;
       cameraDriftRef.current = 0;
       viewer.destroy();
@@ -522,12 +538,19 @@ export default function App() {
 
   const handleLayerMode = useCallback((mode: LayerMode) => {
     const viewer = viewerRef.current;
+    layerModeRef.current = mode;
     setLayerMode(mode);
     setGoogleTilesFrozen(googleTilesetRef.current, false);
 
     if (viewer) {
-      applyLayerMode(viewer, googleTilesetRef.current, mode);
-      setStatus(mode === "hybrid" ? "Google 3D layer visible" : "Base globe only");
+      applyLayerMode(viewer, googleTilesetRef.current, mode, googleTilesVisibleRef.current);
+      setStatus(
+        mode === "hybrid"
+          ? googleTilesVisibleRef.current
+            ? "Google 3D layer visible"
+            : "Loading Google 3D layer"
+          : "Base globe only"
+      );
     }
   }, []);
 
