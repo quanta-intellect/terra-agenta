@@ -57,6 +57,17 @@ interface CameraDiagnostics {
   renderLoop: "running" | "settling" | "frozen";
 }
 
+interface GoogleTilesDiagnostics {
+  status: "idle" | "preflight" | "ready" | "loading-view" | "visible" | "fallback" | "failed";
+  pendingRequests: number;
+  processingTiles: number;
+  visibleTiles: number;
+  failedTiles: number;
+  lastEvent: string;
+  lastError: string | null;
+  elapsedMs: number;
+}
+
 const qualitySettings: Record<
   QualityMode,
   {
@@ -86,12 +97,24 @@ const qualitySettings: Record<
   }
 };
 
+const initialGoogleDiagnostics: GoogleTilesDiagnostics = {
+  status: "idle",
+  pendingRequests: 0,
+  processingTiles: 0,
+  visibleTiles: 0,
+  failedTiles: 0,
+  lastEvent: "Waiting for Google 3D",
+  lastError: null,
+  elapsedMs: 0
+};
+
 function forceRender(viewer: Viewer) {
   viewer.scene.requestRender();
   viewer.render();
 }
 
 function resumeRenderLoop(viewer: Viewer) {
+  viewer.scene.requestRenderMode = false;
   viewer.useDefaultRenderLoop = true;
   viewer.targetFrameRate = 45;
   viewer.scene.requestRender();
@@ -155,10 +178,11 @@ function setCamera(viewer: Viewer, camera: CameraState, fly = true) {
 function tuneCameraControls(viewer: Viewer) {
   const controller = viewer.scene.screenSpaceCameraController;
   controller.enableCollisionDetection = false;
-  controller.inertiaSpin = 0;
-  controller.inertiaTranslate = 0;
-  controller.inertiaZoom = 0;
-  controller.zoomFactor = 3;
+  controller.inertiaSpin = 0.08;
+  controller.inertiaTranslate = 0.08;
+  controller.inertiaZoom = 0.18;
+  controller.maximumMovementRatio = 0.28;
+  controller.zoomFactor = 7;
   controller.minimumZoomDistance = 35;
 }
 
@@ -179,10 +203,10 @@ function applyLayerMode(
   viewer: Viewer,
   tileset: Cesium3DTileset | null,
   mode: LayerMode,
-  hasVisibleGoogleTiles = false
+  showBaseFallback = false
 ) {
   const useGoogle3D = mode === "hybrid" && Boolean(tileset);
-  viewer.scene.globe.show = !(useGoogle3D && hasVisibleGoogleTiles);
+  viewer.scene.globe.show = !useGoogle3D || showBaseFallback;
 
   if (tileset) {
     tileset.show = useGoogle3D;
@@ -226,10 +250,13 @@ function applyQualityMode(viewer: Viewer, tileset: Cesium3DTileset | null, mode:
   if (tileset) {
     tileset.maximumScreenSpaceError = settings.maximumScreenSpaceError;
     tileset.dynamicScreenSpaceError = false;
-    tileset.foveatedScreenSpaceError = false;
+    tileset.foveatedScreenSpaceError = true;
+    tileset.foveatedConeSize = 0.35;
+    tileset.foveatedTimeDelay = 0;
     tileset.skipLevelOfDetail = true;
-    tileset.immediatelyLoadDesiredLevelOfDetail = true;
+    tileset.immediatelyLoadDesiredLevelOfDetail = false;
     tileset.loadSiblings = true;
+    tileset.progressiveResolutionHeightFraction = 0.3;
     tileset.cullRequestsWhileMoving = false;
     tileset.dynamicScreenSpaceErrorDensity = 0.0002;
     tileset.dynamicScreenSpaceErrorFactor = settings.dynamicScreenSpaceErrorFactor;
@@ -257,6 +284,10 @@ export default function App() {
   const viewerRef = useRef<Viewer | null>(null);
   const googleTilesetRef = useRef<Cesium3DTileset | null>(null);
   const googleTilesVisibleRef = useRef(false);
+  const currentViewHasGoogleTilesRef = useRef(false);
+  const googleFallbackTimerRef = useRef<number | null>(null);
+  const googleLoadStartedAtRef = useRef<number | null>(null);
+  const lastGoogleProgressLogRef = useRef(0);
   const layerModeRef = useRef<LayerMode>("base");
   const cameraLockRef = useRef<CameraLock | null>(null);
   const lockedRenderTimerRef = useRef<number | null>(null);
@@ -271,6 +302,7 @@ export default function App() {
   const [qualityMode, setQualityMode] = useState<QualityMode>("fast");
   const [layerMode, setLayerMode] = useState<LayerMode>("base");
   const [isGoogleTilesActive, setIsGoogleTilesActive] = useState(false);
+  const [googleDiagnostics, setGoogleDiagnostics] = useState<GoogleTilesDiagnostics>(initialGoogleDiagnostics);
   const [status, setStatus] = useState("Booting globe");
   const [error, setError] = useState<string | null>(null);
 
@@ -291,6 +323,41 @@ export default function App() {
       forceRender(viewer);
     }
   }, []);
+
+  const clearGoogleFallbackTimer = useCallback(() => {
+    if (googleFallbackTimerRef.current) {
+      window.clearTimeout(googleFallbackTimerRef.current);
+      googleFallbackTimerRef.current = null;
+    }
+  }, []);
+
+  const updateGoogleDiagnostics = useCallback(
+    (event: string, update: Partial<GoogleTilesDiagnostics>, level: "debug" | "info" | "warn" | "error" = "info") => {
+      const elapsedMs = googleLoadStartedAtRef.current ? Math.round(performance.now() - googleLoadStartedAtRef.current) : 0;
+      const nextUpdate = { ...update, lastEvent: event, elapsedMs };
+      setGoogleDiagnostics((current) => ({ ...current, ...nextUpdate }));
+      console[level]("[Terra Google 3D]", event, nextUpdate);
+    },
+    []
+  );
+
+  const scheduleGoogleFallback = useCallback(() => {
+    const viewer = viewerRef.current;
+    const tileset = googleTilesetRef.current;
+    clearGoogleFallbackTimer();
+    if (!viewer || !tileset || layerModeRef.current !== "hybrid") {
+      return;
+    }
+
+    googleFallbackTimerRef.current = window.setTimeout(() => {
+      googleFallbackTimerRef.current = null;
+      if (layerModeRef.current === "hybrid" && !currentViewHasGoogleTilesRef.current) {
+        applyLayerMode(viewer, tileset, "hybrid", true);
+        updateGoogleDiagnostics("fallback timeout", { status: "fallback" }, "warn");
+        setStatus("Still loading Google 3D; showing base fallback");
+      }
+    }, 8000);
+  }, [clearGoogleFallbackTimer, updateGoogleDiagnostics]);
 
   const worldState = useMemo<WorldState>(
     () => ({
@@ -322,7 +389,7 @@ export default function App() {
       skyBox: false,
       skyAtmosphere: false,
       shouldAnimate: false,
-      requestRenderMode: true,
+      requestRenderMode: false,
       maximumRenderTimeChange: Infinity,
       useBrowserRecommendedResolution: true,
       contextOptions: {
@@ -357,7 +424,7 @@ export default function App() {
     const removeCameraListener = viewer.camera.changed.addEventListener(() => {
       setCameraState(cameraFromViewer(viewer));
     });
-    let wheelStopTimer: number | undefined;
+    let wheelRenderTimer: number | undefined;
     const clearLockedRenderTimer = () => {
       if (lockedRenderTimerRef.current) {
         window.clearInterval(lockedRenderTimerRef.current);
@@ -371,26 +438,28 @@ export default function App() {
       setGoogleTilesFrozen(googleTilesetRef.current, false);
       resumeRenderLoop(viewer);
       viewer.scene.screenSpaceCameraController.enableInputs = true;
+      if (layerModeRef.current === "hybrid") {
+        currentViewHasGoogleTilesRef.current = false;
+        applyLayerMode(viewer, googleTilesetRef.current, "hybrid");
+        updateGoogleDiagnostics("camera moved in Google 3D", { status: "loading-view", visibleTiles: 0 }, "debug");
+        scheduleGoogleFallback();
+      }
       setCameraDiagnostics({ lock: "off", driftMeters: 0, renderLoop: "running" });
     };
-    const cancelActiveMotion = () => {
+    const beginActiveMotion = () => {
       beginInteractiveCameraMotion();
-      stopCamera(viewer);
     };
-    const lockSettledMotion = () => {
-      if (wheelStopTimer) {
-        return;
-      }
-      lockCameraAtCurrentView(viewer);
+    const finishActiveMotion = () => {
+      forceRender(viewer);
     };
-    const scheduleWheelLock = () => {
+    const scheduleWheelRender = () => {
       beginInteractiveCameraMotion();
-      if (wheelStopTimer) {
-        window.clearTimeout(wheelStopTimer);
+      if (wheelRenderTimer) {
+        window.clearTimeout(wheelRenderTimer);
       }
-      wheelStopTimer = window.setTimeout(() => {
-        lockCameraAtCurrentView(viewer);
-        wheelStopTimer = undefined;
+      wheelRenderTimer = window.setTimeout(() => {
+        forceRender(viewer);
+        wheelRenderTimer = undefined;
       }, 240);
     };
     const enforceCameraLock = () => {
@@ -402,7 +471,7 @@ export default function App() {
         restoreCameraSnapshot(viewer, cameraLockRef.current);
       }
     };
-    const removeMoveEndListener = viewer.camera.moveEnd.addEventListener(lockSettledMotion);
+    const removeMoveEndListener = viewer.camera.moveEnd.addEventListener(finishActiveMotion);
     const removePreUpdateListener = viewer.scene.preUpdate.addEventListener(enforceCameraLock);
     const removePostUpdateListener = viewer.scene.postUpdate.addEventListener(enforceCameraLock);
     const removePreRenderListener = viewer.scene.preRender.addEventListener(enforceCameraLock);
@@ -414,17 +483,26 @@ export default function App() {
         renderLoop: viewer.useDefaultRenderLoop ? "running" : "frozen"
       });
     }, 500);
-    viewer.canvas.addEventListener("pointerdown", cancelActiveMotion);
-    viewer.canvas.addEventListener("pointerup", lockSettledMotion);
-    viewer.canvas.addEventListener("pointercancel", lockSettledMotion);
-    viewer.canvas.addEventListener("pointerleave", lockSettledMotion);
-    viewer.canvas.addEventListener("wheel", scheduleWheelLock, { passive: true });
-    viewer.canvas.addEventListener("keydown", cancelActiveMotion);
-    viewer.canvas.addEventListener("keyup", lockSettledMotion);
-    window.addEventListener("mouseup", lockSettledMotion);
-    window.addEventListener("blur", lockSettledMotion);
+    viewer.canvas.addEventListener("pointerdown", beginActiveMotion);
+    viewer.canvas.addEventListener("pointerup", finishActiveMotion);
+    viewer.canvas.addEventListener("pointercancel", finishActiveMotion);
+    viewer.canvas.addEventListener("pointerleave", finishActiveMotion);
+    viewer.canvas.addEventListener("wheel", scheduleWheelRender, { passive: true });
+    viewer.canvas.addEventListener("keydown", beginActiveMotion);
+    viewer.canvas.addEventListener("keyup", finishActiveMotion);
+    window.addEventListener("mouseup", finishActiveMotion);
+    window.addEventListener("blur", finishActiveMotion);
 
     if (googleTilesUrl) {
+      googleLoadStartedAtRef.current = performance.now();
+      updateGoogleDiagnostics("preflight started", {
+        status: "preflight",
+        pendingRequests: 0,
+        processingTiles: 0,
+        visibleTiles: 0,
+        failedTiles: 0,
+        lastError: null
+      });
       setStatus("Loading Google 3D Tiles");
       fetch(googleTilesUrl)
         .then(async (response) => {
@@ -432,10 +510,13 @@ export default function App() {
             const body = await response.text();
             throw new Error(`Google preflight failed (${response.status}): ${body.slice(0, 240)}`);
           }
+          updateGoogleDiagnostics("preflight ok", { status: "ready" });
         })
         .catch((preflightError: unknown) => {
+          const message = formatLoadError(preflightError);
           console.error(preflightError);
-          setError(`Google 3D Tiles preflight failed: ${formatLoadError(preflightError)}`);
+          updateGoogleDiagnostics("preflight failed", { status: "failed", lastError: message }, "error");
+          setError(`Google 3D Tiles preflight failed: ${message}`);
         });
 
       createGooglePhotorealistic3DTileset(
@@ -448,35 +529,78 @@ export default function App() {
           dynamicScreenSpaceError: false,
           dynamicScreenSpaceErrorDensity: 0.0002,
           dynamicScreenSpaceErrorFactor: qualitySettings[qualityMode].dynamicScreenSpaceErrorFactor,
-          foveatedScreenSpaceError: false,
+          foveatedScreenSpaceError: true,
+          foveatedConeSize: 0.35,
+          foveatedTimeDelay: 0,
           skipLevelOfDetail: true,
-          immediatelyLoadDesiredLevelOfDetail: true,
+          immediatelyLoadDesiredLevelOfDetail: false,
           loadSiblings: true,
+          progressiveResolutionHeightFraction: 0.3,
           cullRequestsWhileMoving: false,
           enableCollision: false
         }
       )
         .then((tileset) => {
+          updateGoogleDiagnostics("tileset ready", { status: "ready" });
           tileset.showCreditsOnScreen = true;
           googleTilesetRef.current = tileset;
           viewer.scene.primitives.add(tileset);
           tileset.tileVisible.addEventListener(() => {
-            if (googleTilesVisibleRef.current) {
+            if (currentViewHasGoogleTilesRef.current) {
               return;
             }
+            clearGoogleFallbackTimer();
             googleTilesVisibleRef.current = true;
-            applyLayerMode(viewer, tileset, layerModeRef.current, true);
+            currentViewHasGoogleTilesRef.current = true;
+            updateGoogleDiagnostics("tile visible", { status: "visible", visibleTiles: 1 });
+            applyLayerMode(viewer, tileset, layerModeRef.current);
             setStatus(layerModeRef.current === "hybrid" ? "Google 3D layer visible" : "Google 3D Tiles ready");
           });
+          tileset.tileFailed.addEventListener((tileError: unknown) => {
+            const message = formatLoadError(tileError);
+            console.error(tileError);
+            const elapsedMs = googleLoadStartedAtRef.current ? Math.round(performance.now() - googleLoadStartedAtRef.current) : 0;
+            setGoogleDiagnostics((current) => ({
+              ...current,
+              status: "failed",
+              failedTiles: current.failedTiles + 1,
+              lastEvent: "tile failed",
+              lastError: message,
+              elapsedMs
+            }));
+            console.error("[Terra Google 3D]", "tile failed", { message, elapsedMs });
+            if (layerModeRef.current === "hybrid") {
+              applyLayerMode(viewer, tileset, "hybrid", true);
+              setError(`Google 3D tile failed: ${message}`);
+              setStatus("Google 3D failed for this view; showing base fallback");
+            }
+          });
+          tileset.loadProgress.addEventListener((pendingRequests: number, processingTiles: number) => {
+            const now = performance.now();
+            setGoogleDiagnostics((current) => ({
+              ...current,
+              pendingRequests,
+              processingTiles,
+              lastEvent: "load progress",
+              elapsedMs: googleLoadStartedAtRef.current ? Math.round(now - googleLoadStartedAtRef.current) : 0
+            }));
+            if (now - lastGoogleProgressLogRef.current > 1000) {
+              lastGoogleProgressLogRef.current = now;
+              console.debug("[Terra Google 3D]", "load progress", { pendingRequests, processingTiles });
+            }
+            viewer.scene.requestRender();
+          });
           applyQualityMode(viewer, tileset, qualityMode);
-          applyLayerMode(viewer, tileset, layerModeRef.current, googleTilesVisibleRef.current);
+          applyLayerMode(viewer, tileset, layerModeRef.current);
           setIsGoogleTilesActive(true);
           setStatus("Google 3D Tiles loaded; base layer active");
         })
         .catch((tilesError: unknown) => {
+          const message = formatLoadError(tilesError);
           console.error(tilesError);
           viewer.scene.globe.show = true;
-          setError(`Google 3D Tiles did not load: ${formatLoadError(tilesError)}`);
+          updateGoogleDiagnostics("tileset failed", { status: "failed", lastError: message }, "error");
+          setError(`Google 3D Tiles did not load: ${message}`);
           setStatus("Ready with base globe");
         });
     }
@@ -489,24 +613,26 @@ export default function App() {
       removePreRenderListener();
       removePostRenderListener();
       window.clearInterval(diagnosticsTimer);
-      if (wheelStopTimer) {
-        window.clearTimeout(wheelStopTimer);
+      clearGoogleFallbackTimer();
+      if (wheelRenderTimer) {
+        window.clearTimeout(wheelRenderTimer);
       }
-      viewer.canvas.removeEventListener("pointerdown", cancelActiveMotion);
-      viewer.canvas.removeEventListener("pointerup", lockSettledMotion);
-      viewer.canvas.removeEventListener("pointercancel", lockSettledMotion);
-      viewer.canvas.removeEventListener("pointerleave", lockSettledMotion);
-      viewer.canvas.removeEventListener("wheel", scheduleWheelLock);
-      viewer.canvas.removeEventListener("keydown", cancelActiveMotion);
-      viewer.canvas.removeEventListener("keyup", lockSettledMotion);
-      window.removeEventListener("mouseup", lockSettledMotion);
-      window.removeEventListener("blur", lockSettledMotion);
+      viewer.canvas.removeEventListener("pointerdown", beginActiveMotion);
+      viewer.canvas.removeEventListener("pointerup", finishActiveMotion);
+      viewer.canvas.removeEventListener("pointercancel", finishActiveMotion);
+      viewer.canvas.removeEventListener("pointerleave", finishActiveMotion);
+      viewer.canvas.removeEventListener("wheel", scheduleWheelRender);
+      viewer.canvas.removeEventListener("keydown", beginActiveMotion);
+      viewer.canvas.removeEventListener("keyup", finishActiveMotion);
+      window.removeEventListener("mouseup", finishActiveMotion);
+      window.removeEventListener("blur", finishActiveMotion);
       if (lockedRenderTimerRef.current) {
         window.clearInterval(lockedRenderTimerRef.current);
         lockedRenderTimerRef.current = null;
       }
       googleTilesetRef.current = null;
       googleTilesVisibleRef.current = false;
+      currentViewHasGoogleTilesRef.current = false;
       cameraLockRef.current = null;
       cameraDriftRef.current = 0;
       viewer.destroy();
@@ -541,18 +667,24 @@ export default function App() {
     layerModeRef.current = mode;
     setLayerMode(mode);
     setGoogleTilesFrozen(googleTilesetRef.current, false);
+    setError(null);
 
     if (viewer) {
-      applyLayerMode(viewer, googleTilesetRef.current, mode, googleTilesVisibleRef.current);
+      if (mode === "hybrid") {
+        currentViewHasGoogleTilesRef.current = false;
+        applyLayerMode(viewer, googleTilesetRef.current, mode);
+        scheduleGoogleFallback();
+      } else {
+        clearGoogleFallbackTimer();
+        applyLayerMode(viewer, googleTilesetRef.current, mode);
+      }
       setStatus(
         mode === "hybrid"
-          ? googleTilesVisibleRef.current
-            ? "Google 3D layer visible"
-            : "Loading Google 3D layer"
+          ? "Loading photorealistic Google 3D"
           : "Base globe only"
       );
     }
-  }, []);
+  }, [clearGoogleFallbackTimer, scheduleGoogleFallback]);
 
   const handleFreezeGoogleTiles = useCallback(() => {
     const viewer = viewerRef.current;
@@ -750,7 +882,34 @@ export default function App() {
               <dt>Render</dt>
               <dd>{cameraDiagnostics.renderLoop}</dd>
             </div>
+            <div>
+              <dt>Google</dt>
+              <dd>{googleDiagnostics.status}</dd>
+            </div>
+            <div>
+              <dt>G3D Queue</dt>
+              <dd>
+                {googleDiagnostics.pendingRequests}/{googleDiagnostics.processingTiles}
+              </dd>
+            </div>
+            <div>
+              <dt>G3D Visible</dt>
+              <dd>{googleDiagnostics.visibleTiles}</dd>
+            </div>
+            <div>
+              <dt>G3D Failed</dt>
+              <dd>{googleDiagnostics.failedTiles}</dd>
+            </div>
+            <div>
+              <dt>G3D Event</dt>
+              <dd>{googleDiagnostics.lastEvent}</dd>
+            </div>
+            <div>
+              <dt>G3D Time</dt>
+              <dd>{googleDiagnostics.elapsedMs} ms</dd>
+            </div>
           </dl>
+          {googleDiagnostics.lastError ? <p className="error-line">{googleDiagnostics.lastError}</p> : null}
         </section>
 
         <section className="panel-section">
