@@ -274,6 +274,47 @@ button {
   color: #f2b6a7;
 }
 
+.debug-log {
+  display: grid;
+  gap: 8px;
+}
+
+.debug-entry {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid #26343a;
+  border-radius: 8px;
+  background: #0f1519;
+}
+
+.debug-entry.warn {
+  border-color: #7a6840;
+}
+
+.debug-entry.error {
+  border-color: #7a4c43;
+}
+
+.debug-entry span,
+.debug-entry small {
+  overflow: hidden;
+  color: #91a19e;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.debug-entry strong {
+  overflow: hidden;
+  color: #ecf3f1;
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .capture-section {
   min-height: 0;
 }

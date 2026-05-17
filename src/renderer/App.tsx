@@ -68,6 +68,14 @@ interface GoogleTilesDiagnostics {
   elapsedMs: number;
 }
 
+interface GoogleTilesLogEntry {
+  id: number;
+  level: "debug" | "info" | "warn" | "error";
+  message: string;
+  detail: string;
+  elapsedMs: number;
+}
+
 const qualitySettings: Record<
   QualityMode,
   {
@@ -303,6 +311,7 @@ export default function App() {
   const [layerMode, setLayerMode] = useState<LayerMode>("base");
   const [isGoogleTilesActive, setIsGoogleTilesActive] = useState(false);
   const [googleDiagnostics, setGoogleDiagnostics] = useState<GoogleTilesDiagnostics>(initialGoogleDiagnostics);
+  const [googleLog, setGoogleLog] = useState<GoogleTilesLogEntry[]>([]);
   const [status, setStatus] = useState("Booting globe");
   const [error, setError] = useState<string | null>(null);
 
@@ -336,6 +345,18 @@ export default function App() {
       const elapsedMs = googleLoadStartedAtRef.current ? Math.round(performance.now() - googleLoadStartedAtRef.current) : 0;
       const nextUpdate = { ...update, lastEvent: event, elapsedMs };
       setGoogleDiagnostics((current) => ({ ...current, ...nextUpdate }));
+      setGoogleLog((current) =>
+        [
+          {
+            id: Date.now(),
+            level,
+            message: event,
+            detail: JSON.stringify(nextUpdate),
+            elapsedMs
+          },
+          ...current
+        ].slice(0, 8)
+      );
       console[level]("[Terra Google 3D]", event, nextUpdate);
     },
     []
@@ -368,6 +389,8 @@ export default function App() {
     }),
     [camera, captures, isGoogleTilesActive, layerMode]
   );
+  const baseGlobeButtonLabel =
+    layerMode === "hybrid" && !currentViewHasGoogleTilesRef.current ? "Restore base fallback" : "Toggle base globe";
 
   useEffect(() => {
     if (!containerRef.current || viewerRef.current) {
@@ -568,6 +591,18 @@ export default function App() {
               lastError: message,
               elapsedMs
             }));
+            setGoogleLog((current) =>
+              [
+                {
+                  id: Date.now(),
+                  level: "error" as const,
+                  message: "tile failed",
+                  detail: JSON.stringify({ message, elapsedMs }),
+                  elapsedMs
+                },
+                ...current
+              ].slice(0, 8)
+            );
             console.error("[Terra Google 3D]", "tile failed", { message, elapsedMs });
             if (layerModeRef.current === "hybrid") {
               applyLayerMode(viewer, tileset, "hybrid", true);
@@ -724,10 +759,17 @@ export default function App() {
     }
 
     unlockCamera();
+    if (layerModeRef.current === "hybrid" && !currentViewHasGoogleTilesRef.current) {
+      applyLayerMode(viewer, googleTilesetRef.current, "hybrid", true);
+      setStatus("Base fallback restored while Google 3D is loading");
+      forceRender(viewer);
+      return;
+    }
+
     viewer.scene.globe.show = !viewer.scene.globe.show;
     forceRender(viewer);
     setStatus(viewer.scene.globe.show ? "Base globe visible" : "Base globe hidden");
-  }, []);
+  }, [unlockCamera]);
 
   const resetCamera = useCallback(() => {
     const viewer = viewerRef.current;
@@ -914,6 +956,26 @@ export default function App() {
 
         <section className="panel-section">
           <div className="section-heading">
+            <Gauge size={16} aria-hidden="true" />
+            <h2>Google 3D Debug</h2>
+          </div>
+          <div className="debug-log" aria-label="Google 3D event log">
+            {googleLog.length ? (
+              googleLog.map((entry) => (
+                <div key={entry.id} className={`debug-entry ${entry.level}`}>
+                  <span>{entry.elapsedMs} ms</span>
+                  <strong>{entry.message}</strong>
+                  <small>{entry.detail}</small>
+                </div>
+              ))
+            ) : (
+              <p className="empty-state">No Google 3D events yet</p>
+            )}
+          </div>
+        </section>
+
+        <section className="panel-section">
+          <div className="section-heading">
             <CameraIcon size={16} aria-hidden="true" />
             <h2>Capture</h2>
           </div>
@@ -923,7 +985,7 @@ export default function App() {
           </button>
           <button className="secondary-action" onClick={toggleBaseGlobe}>
             <Globe2 size={16} aria-hidden="true" />
-            Toggle base globe
+            {baseGlobeButtonLabel}
           </button>
           <button className="secondary-action" onClick={handleFreezeGoogleTiles} disabled={!isGoogleTilesActive}>
             <Square size={15} aria-hidden="true" />
