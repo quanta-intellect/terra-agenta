@@ -54,7 +54,7 @@ interface CameraLock {
 interface CameraDiagnostics {
   lock: "off" | "on";
   driftMeters: number;
-  renderLoop: "running" | "frozen";
+  renderLoop: "running" | "settling" | "frozen";
 }
 
 const qualitySettings: Record<
@@ -100,6 +100,12 @@ function resumeRenderLoop(viewer: Viewer) {
 function freezeRenderLoop(viewer: Viewer) {
   forceRender(viewer);
   viewer.useDefaultRenderLoop = false;
+}
+
+function renderLockedFrame(viewer: Viewer, snapshot: CameraLock) {
+  restoreCameraSnapshot(viewer, snapshot);
+  viewer.render();
+  restoreCameraSnapshot(viewer, snapshot);
 }
 
 function cameraFromViewer(viewer: Viewer): CameraState {
@@ -246,6 +252,7 @@ export default function App() {
   const viewerRef = useRef<Viewer | null>(null);
   const googleTilesetRef = useRef<Cesium3DTileset | null>(null);
   const cameraLockRef = useRef<CameraLock | null>(null);
+  const lockedRenderTimerRef = useRef<number | null>(null);
   const cameraDriftRef = useRef(0);
   const [camera, setCameraState] = useState<CameraState>(initialCamera);
   const [cameraDiagnostics, setCameraDiagnostics] = useState<CameraDiagnostics>({
@@ -262,6 +269,10 @@ export default function App() {
 
   const unlockCamera = useCallback(() => {
     const viewer = viewerRef.current;
+    if (lockedRenderTimerRef.current) {
+      window.clearInterval(lockedRenderTimerRef.current);
+      lockedRenderTimerRef.current = null;
+    }
     cameraLockRef.current = null;
     cameraDriftRef.current = 0;
     setGoogleTilesFrozen(googleTilesetRef.current, false);
@@ -340,25 +351,40 @@ export default function App() {
       setCameraState(cameraFromViewer(viewer));
     });
     let wheelStopTimer: number | undefined;
-    const cancelActiveMotion = () => {
+    const clearLockedRenderTimer = () => {
+      if (lockedRenderTimerRef.current) {
+        window.clearInterval(lockedRenderTimerRef.current);
+        lockedRenderTimerRef.current = null;
+      }
+    };
+    const beginInteractiveCameraMotion = () => {
+      clearLockedRenderTimer();
       cameraLockRef.current = null;
       cameraDriftRef.current = 0;
       setGoogleTilesFrozen(googleTilesetRef.current, false);
       resumeRenderLoop(viewer);
       viewer.scene.screenSpaceCameraController.enableInputs = true;
-      stopCamera(viewer);
       setCameraDiagnostics({ lock: "off", driftMeters: 0, renderLoop: "running" });
     };
-    const lockSettledMotion = () => lockCameraAtCurrentView(viewer);
-    const scheduleWheelLock = () => {
+    const cancelActiveMotion = () => {
+      beginInteractiveCameraMotion();
       stopCamera(viewer);
+    };
+    const lockSettledMotion = () => {
+      if (wheelStopTimer) {
+        return;
+      }
+      lockCameraAtCurrentView(viewer);
+    };
+    const scheduleWheelLock = () => {
+      beginInteractiveCameraMotion();
       if (wheelStopTimer) {
         window.clearTimeout(wheelStopTimer);
       }
       wheelStopTimer = window.setTimeout(() => {
         lockCameraAtCurrentView(viewer);
         wheelStopTimer = undefined;
-      }, 120);
+      }, 240);
     };
     const enforceCameraLock = () => {
       if (cameraLockRef.current) {
@@ -460,6 +486,10 @@ export default function App() {
       viewer.canvas.removeEventListener("keyup", lockSettledMotion);
       window.removeEventListener("mouseup", lockSettledMotion);
       window.removeEventListener("blur", lockSettledMotion);
+      if (lockedRenderTimerRef.current) {
+        window.clearInterval(lockedRenderTimerRef.current);
+        lockedRenderTimerRef.current = null;
+      }
       googleTilesetRef.current = null;
       cameraLockRef.current = null;
       cameraDriftRef.current = 0;
@@ -565,15 +595,22 @@ export default function App() {
     }
 
     lockCameraAtCurrentView(viewer);
-    cameraLockRef.current = snapshotCamera(viewer);
+    const snapshot = snapshotCamera(viewer);
+    cameraLockRef.current = snapshot;
     cameraDriftRef.current = 0;
     setGoogleTilesFrozen(googleTilesetRef.current, false);
-    resumeRenderLoop(viewer);
     viewer.scene.screenSpaceCameraController.enableInputs = false;
+    freezeRenderLoop(viewer);
+    if (lockedRenderTimerRef.current) {
+      window.clearInterval(lockedRenderTimerRef.current);
+    }
+    lockedRenderTimerRef.current = window.setInterval(() => {
+      renderLockedFrame(viewer, snapshot);
+    }, 350);
     setCameraState(cameraFromViewer(viewer));
-    forceRender(viewer);
-    setCameraDiagnostics({ lock: "on", driftMeters: 0, renderLoop: "running" });
-    setStatus("Camera locked; tiles still rendering");
+    renderLockedFrame(viewer, snapshot);
+    setCameraDiagnostics({ lock: "on", driftMeters: 0, renderLoop: "settling" });
+    setStatus("Camera locked; tiles refining in pulses");
   }, []);
 
   return (
